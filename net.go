@@ -74,10 +74,10 @@ func validateIPv4PacketStruct(packet *IPv4Packet) error {
 	return nil
 }
 
-// MarshallIPv4Packet creates a wire-representation (in network byte order) of an IPv4Packet
+// Marshall creates a wire-representation (in network byte order) of an IPv4Packet
 // struct.  If any field contains an illegal value, an error is returned.  No check is made
 // for a valid Protocol value, a correct Checksum or valid Options.
-func MarshallIPv4Packet(packet *IPv4Packet) ([]byte, error) {
+func (packet *IPv4Packet) Marshall() ([]byte, error) {
 	if err := validateIPv4PacketStruct(packet); err != nil {
 		return nil, err
 	}
@@ -107,5 +107,55 @@ func MarshallIPv4Packet(packet *IPv4Packet) ([]byte, error) {
 }
 
 func UnmarshallIPv4Packet(asBytes []byte) (*IPv4Packet, error) {
+	return nil, nil
+}
+
+type ICMPv4Type uint8
+
+const (
+	ICMPv4EchoReply              ICMPv4Type = 0
+	ICMPv4DestinationUnreachable ICMPv4Type = 3
+	ICMPv4SourceQuench           ICMPv4Type = 4
+	ICMPv4Redirect               ICMPv4Type = 5
+	ICMPv4EchoRequest            ICMPv4Type = 8
+	ICMPv4RouterAdvertisement    ICMPv4Type = 9
+	ICMPv4RouterSolicitation     ICMPv4Type = 10
+	ICMPv4TimeExceeded           ICMPv4Type = 11
+	ICMPv4BadIPHeader            ICMPv4Type = 12
+	ICMPv4Timestamp              ICMPv4Type = 13
+	ICMPv4TimestampReply         ICMPv4Type = 14
+	ICMPv4ExtendedEchoRequest    ICMPv4Type = 42
+	ICMPv4ExtendedEchoReply      ICMPv4Type = 43
+)
+
+type ICMPv4Header struct {
+	Type               ICMPv4Type
+	Code               uint8
+	Checksum           uint16
+	TypeSpecificHeader []byte
+}
+
+type ICMPv4PDU struct {
+	Header ICMPv4Header
+	Data   []byte
+}
+
+// Marshall converts the data structure values into wire format (in network byte order).
+// None of the fields are checked for correctness.
+func (pdu *ICMPv4PDU) Marshall() ([]byte, error) {
+	marshalled := make([]byte, 4+len(pdu.Header.TypeSpecificHeader)+len(pdu.Data))
+
+	marshalled[0] = uint8(pdu.Header.Type)
+	marshalled[1] = pdu.Header.Code
+	binary.BigEndian.PutUint16(marshalled[2:4], pdu.Header.Checksum)
+	copy(marshalled[4:len(pdu.Header.TypeSpecificHeader)], pdu.Header.TypeSpecificHeader)
+
+	offset := 4 + len(pdu.Header.TypeSpecificHeader)
+	copy(marshalled[offset:], pdu.Data)
+
+	return marshalled, nil
+}
+
+func UnmarshallICMPv4PDU(asBytes []byte) (*ICMPv4PDU, error) {
 	return nil, nil
 }
