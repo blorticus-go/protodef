@@ -3,6 +3,7 @@ package protodef
 import (
 	"encoding/binary"
 	"fmt"
+	"net"
 )
 
 const (
@@ -21,10 +22,10 @@ type IPv4PacketHeader struct {
 	Flags              uint8
 	FragmentOffset     uint16
 	TTL                uint8
-	Protocol           uint8
+	Protocol           IPProtocol
 	HeaderChecksum     uint16
-	SourceAddress      uint32
-	DestinationAddress uint32
+	SourceAddress      net.IP
+	DestinationAddress net.IP
 }
 
 // IPv4Packet represents a complete IPv4 packet.  The Options must already be
@@ -34,6 +35,71 @@ type IPv4Packet struct {
 	Options          []byte
 	NumberOfPadBytes uint8
 	Data             []byte
+	pdu              IPProtocolPDU
+}
+
+func cloneIP(src *net.IP) net.IP {
+	clone := make([]byte, len([]byte(*src)))
+	return net.IP(clone)
+}
+
+func NewIPv4Packet(source *net.IP, destination *net.IP) *IPv4Packet {
+	return &IPv4Packet{
+		Header: IPv4PacketHeader{
+			Version:            4,
+			HeaderLength:       20,
+			TotalPacketLength:  20,
+			TTL:                64,
+			SourceAddress:      cloneIP(source),
+			DestinationAddress: cloneIP(destination),
+		},
+	}
+}
+
+func (packet *IPv4Packet) SetRawPayloadErrorable(payloadInNetworkByteOrder []byte, ipPacketProtocolFieldValue IPProtocol) error {
+	if len(payloadInNetworkByteOrder) > 65536-(int(packet.Header.HeaderLength)*4) {
+		return fmt.Errorf("payload is too long")
+	}
+
+	packet.Header.Protocol = ipPacketProtocolFieldValue
+	packet.Data = payloadInNetworkByteOrder
+
+	return nil
+}
+
+func (packet *IPv4Packet) WithPayloadFromPdu(pdu IPProtocolPDU) *IPv4Packet {
+	packet.pdu = pdu
+	return packet
+}
+
+func (packet *IPv4Packet) WithRawPayload(payloadInNetworkByteOrder []byte, ipPacketProtocolFieldValue IPProtocol) *IPv4Packet {
+	if err := packet.SetRawPayloadErrorable(payloadInNetworkByteOrder, ipPacketProtocolFieldValue); err != nil {
+		panic(err.Error())
+	}
+
+	return packet
+}
+
+func (packet *IPv4Packet) ComputeHeaderChecksum() uint16 {
+	srcIPAsUint32 := binary.BigEndian.Uint32(packet.Header.SourceAddress.To4())
+	destIPAsUint32 := binary.BigEndian.Uint32(packet.Header.DestinationAddress.To4())
+
+	sum := uint32((uint32(packet.Header.Version)<<12)|(uint32(packet.Header.HeaderLength)<<8)|(uint32(packet.Header.DSCP)<<2)|(0x03&uint32(packet.Header.ECN))) +
+		uint32(packet.Header.TotalPacketLength) +
+		uint32(packet.Header.FragmentIdentifier) +
+		uint32(uint32(packet.Header.Flags)<<13) | (uint32(packet.Header.FragmentOffset) & 0x1fff) +
+		(uint32(packet.Header.TTL) << 8) | uint32(packet.Header.Protocol) +
+		(srcIPAsUint32 >> 16) +
+		(srcIPAsUint32 & 0x0000ffff) +
+		(destIPAsUint32 >> 16) +
+		(destIPAsUint32 & 0x0000ffff)
+
+	for sum > 0xffff {
+		hi16 := (sum & 0xffff0000) >> 16
+		sum = (sum & 0xffff) + hi16
+	}
+
+	return uint16(0xffff - sum)
 }
 
 func validateIPv4PacketStruct(packet *IPv4Packet) error {
@@ -78,9 +144,29 @@ func validateIPv4PacketStruct(packet *IPv4Packet) error {
 // struct.  If any field contains an illegal value, an error is returned.  No check is made
 // for a valid Protocol value, a correct Checksum or valid Options.
 func (packet *IPv4Packet) Marshall() ([]byte, error) {
+	if packet.Data == nil {
+		if packet.pdu != nil {
+			data, err := packet.pdu.MarshallToNetworkByteOrder()
+			if err != nil {
+				return nil, fmt.Errorf("unable to unmarshall IP packet PDU: %s", err.Error())
+			}
+			packet.Data = data
+		}
+	}
+
+	totalLengthUint32 := uint32(packet.Header.HeaderLength)*4 + uint32(len(packet.Data))
+
+	if totalLengthUint32 > 0xffff {
+		return nil, fmt.Errorf("encoded length (%d) exceeds maximum IPv4 packet length", totalLengthUint32)
+	}
+
+	packet.Header.TotalPacketLength = uint16(totalLengthUint32)
+
 	if err := validateIPv4PacketStruct(packet); err != nil {
 		return nil, err
 	}
+
+	packet.Header.HeaderChecksum = packet.ComputeHeaderChecksum()
 
 	marshalled := make([]byte, 20+len(packet.Options)+int(packet.NumberOfPadBytes)+len(packet.Data))
 
@@ -90,10 +176,10 @@ func (packet *IPv4Packet) Marshall() ([]byte, error) {
 	binary.BigEndian.PutUint16(marshalled[4:6], packet.Header.FragmentIdentifier)
 	binary.BigEndian.PutUint16(marshalled[6:8], ((uint16(packet.Header.Flags) << 13) | (uint16(packet.Header.FragmentOffset) & 0x03f)))
 	marshalled[8] = packet.Header.TTL
-	marshalled[9] = packet.Header.Protocol
+	marshalled[9] = byte(packet.Header.Protocol)
 	binary.BigEndian.PutUint16(marshalled[10:12], packet.Header.HeaderChecksum)
-	binary.BigEndian.PutUint32(marshalled[12:16], packet.Header.SourceAddress)
-	binary.BigEndian.PutUint32(marshalled[16:20], packet.Header.DestinationAddress)
+	copy(marshalled[12:16], packet.Header.SourceAddress.To4()[:4])
+	copy(marshalled[16:20], packet.Header.DestinationAddress.To4()[:4])
 	copy(marshalled[20:20+len(packet.Options)], packet.Options)
 
 	offset := 20 + len(packet.Options)
@@ -104,6 +190,16 @@ func (packet *IPv4Packet) Marshall() ([]byte, error) {
 	copy(marshalled[offset+int(packet.NumberOfPadBytes):], packet.Data)
 
 	return marshalled, nil
+}
+
+// MarshallToNetworkByteOrder is synonymous with Marshall() but satisfies
+// the NetworkByteOrderPDU interface.
+func (packet *IPv4Packet) MarshallToNetworkByteOrder() ([]byte, error) {
+	return packet.Marshall()
+}
+
+func (packet *IPv4Packet) IPProtocolValue() IPProtocol {
+	return IPProtoIPIP
 }
 
 func UnmarshallIPv4Packet(asBytes []byte) (*IPv4Packet, error) {
@@ -154,6 +250,16 @@ func (pdu *ICMPv4PDU) Marshall() ([]byte, error) {
 	copy(marshalled[offset:], pdu.Data)
 
 	return marshalled, nil
+}
+
+// MarshallToNetworkByteOrder is synonymous with Marshall() but satisfies
+// the NetworkByteOrderPDU interface.
+func (pdu *ICMPv4PDU) MarshallToNetworkByteOrder() ([]byte, error) {
+	return pdu.Marshall()
+}
+
+func (pdu *ICMPv4PDU) IPProtocolValue() IPProtocol {
+	return IPProtoICMP
 }
 
 func UnmarshallICMPv4PDU(asBytes []byte) (*ICMPv4PDU, error) {
