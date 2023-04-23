@@ -13,19 +13,19 @@ const (
 
 // IPv4PacketHeader represents the values of an IPv4 packet header.
 type IPv4PacketHeader struct {
-	Version            uint8
-	HeaderLength       uint8
-	DSCP               uint8
-	ECN                uint8
-	TotalPacketLength  uint16
-	FragmentIdentifier uint16
-	Flags              uint8
-	FragmentOffset     uint16
-	TTL                uint8
-	Protocol           IPProtocol
-	HeaderChecksum     uint16
-	SourceAddress      net.IP
-	DestinationAddress net.IP
+	Version                   uint8
+	HeaderLengthInDoubleWords uint8
+	DSCP                      uint8
+	ECN                       uint8
+	TotalPacketLengthInBytes  uint16
+	FragmentIdentifier        uint16
+	Flags                     uint8
+	FragmentOffset            uint16
+	TTL                       uint8
+	Protocol                  IPProtocol
+	HeaderChecksum            uint16
+	SourceAddress             net.IP
+	DestinationAddress        net.IP
 }
 
 // IPv4Packet represents a complete IPv4 packet.  The Options must already be
@@ -46,18 +46,18 @@ func cloneIP(src *net.IP) net.IP {
 func NewIPv4Packet(source *net.IP, destination *net.IP) *IPv4Packet {
 	return &IPv4Packet{
 		Header: IPv4PacketHeader{
-			Version:            4,
-			HeaderLength:       20,
-			TotalPacketLength:  20,
-			TTL:                64,
-			SourceAddress:      cloneIP(source),
-			DestinationAddress: cloneIP(destination),
+			Version:                   4,
+			HeaderLengthInDoubleWords: 5,
+			TotalPacketLengthInBytes:  20,
+			TTL:                       64,
+			SourceAddress:             cloneIP(source),
+			DestinationAddress:        cloneIP(destination),
 		},
 	}
 }
 
 func (packet *IPv4Packet) SetRawPayloadErrorable(payloadInNetworkByteOrder []byte, ipPacketProtocolFieldValue IPProtocol) error {
-	if len(payloadInNetworkByteOrder) > 65536-(int(packet.Header.HeaderLength)*4) {
+	if len(payloadInNetworkByteOrder) > 65536-(int(packet.Header.HeaderLengthInDoubleWords)*4) {
 		return fmt.Errorf("payload is too long")
 	}
 
@@ -84,8 +84,8 @@ func (packet *IPv4Packet) ComputeHeaderChecksum() uint16 {
 	srcIPAsUint32 := binary.BigEndian.Uint32(packet.Header.SourceAddress.To4())
 	destIPAsUint32 := binary.BigEndian.Uint32(packet.Header.DestinationAddress.To4())
 
-	sum := uint32((uint32(packet.Header.Version)<<12)|(uint32(packet.Header.HeaderLength)<<8)|(uint32(packet.Header.DSCP)<<2)|(0x03&uint32(packet.Header.ECN))) +
-		uint32(packet.Header.TotalPacketLength) +
+	sum := uint32((uint32(packet.Header.Version)<<12)|(uint32(packet.Header.HeaderLengthInDoubleWords)<<8)|(uint32(packet.Header.DSCP)<<2)|(0x03&uint32(packet.Header.ECN))) +
+		uint32(packet.Header.TotalPacketLengthInBytes) +
 		uint32(packet.Header.FragmentIdentifier) +
 		uint32(uint32(packet.Header.Flags)<<13) | (uint32(packet.Header.FragmentOffset) & 0x1fff) +
 		(uint32(packet.Header.TTL) << 8) | uint32(packet.Header.Protocol) +
@@ -107,8 +107,8 @@ func validateIPv4PacketStruct(packet *IPv4Packet) error {
 		return fmt.Errorf("invalid Version (%d)", packet.Header.Version)
 	}
 
-	if packet.Header.HeaderLength > 15 {
-		return fmt.Errorf("invalid HeaderLength (%d)", packet.Header.HeaderLength)
+	if packet.Header.HeaderLengthInDoubleWords > 15 {
+		return fmt.Errorf("invalid HeaderLength (%d)", packet.Header.HeaderLengthInDoubleWords)
 	}
 
 	if packet.Header.DSCP > 63 {
@@ -129,12 +129,12 @@ func validateIPv4PacketStruct(packet *IPv4Packet) error {
 
 	encodedHeaderLength := 20 + len(packet.Options) + int(packet.NumberOfPadBytes)
 
-	if int(packet.Header.HeaderLength)*4 != 20+len(packet.Options)+int(packet.NumberOfPadBytes) {
-		return fmt.Errorf("header length of (%d) bytes does not match fixed header length (20) plus options (%d) and padding (%d)", packet.Header.HeaderLength*4, len(packet.Options), packet.NumberOfPadBytes)
+	if int(packet.Header.HeaderLengthInDoubleWords)*4 != 20+len(packet.Options)+int(packet.NumberOfPadBytes) {
+		return fmt.Errorf("header length of (%d) bytes does not match fixed header length (20) plus options (%d) and padding (%d)", packet.Header.HeaderLengthInDoubleWords*4, len(packet.Options), packet.NumberOfPadBytes)
 	}
 
-	if int(packet.Header.TotalPacketLength) != encodedHeaderLength+len(packet.Data) {
-		return fmt.Errorf("total packet length header value (%d) does not match total encoded packet length (%d)", packet.Header.TotalPacketLength, encodedHeaderLength+len(packet.Data))
+	if int(packet.Header.TotalPacketLengthInBytes) != encodedHeaderLength+len(packet.Data) {
+		return fmt.Errorf("total packet length header value (%d) does not match total encoded packet length (%d)", packet.Header.TotalPacketLengthInBytes, encodedHeaderLength+len(packet.Data))
 	}
 
 	return nil
@@ -154,13 +154,13 @@ func (packet *IPv4Packet) Marshall() ([]byte, error) {
 		}
 	}
 
-	totalLengthUint32 := uint32(packet.Header.HeaderLength)*4 + uint32(len(packet.Data))
+	totalLengthUint32 := uint32(packet.Header.HeaderLengthInDoubleWords)*4 + uint32(len(packet.Data))
 
 	if totalLengthUint32 > 0xffff {
 		return nil, fmt.Errorf("encoded length (%d) exceeds maximum IPv4 packet length", totalLengthUint32)
 	}
 
-	packet.Header.TotalPacketLength = uint16(totalLengthUint32)
+	packet.Header.TotalPacketLengthInBytes = uint16(totalLengthUint32)
 
 	if err := validateIPv4PacketStruct(packet); err != nil {
 		return nil, err
@@ -170,9 +170,9 @@ func (packet *IPv4Packet) Marshall() ([]byte, error) {
 
 	marshalled := make([]byte, 20+len(packet.Options)+int(packet.NumberOfPadBytes)+len(packet.Data))
 
-	marshalled[0] = 0x40 | packet.Header.HeaderLength
+	marshalled[0] = 0x40 | packet.Header.HeaderLengthInDoubleWords
 	marshalled[1] = (packet.Header.DSCP << 2) | (packet.Header.ECN & 0x03)
-	binary.BigEndian.PutUint16(marshalled[2:4], packet.Header.TotalPacketLength)
+	binary.BigEndian.PutUint16(marshalled[2:4], packet.Header.TotalPacketLengthInBytes)
 	binary.BigEndian.PutUint16(marshalled[4:6], packet.Header.FragmentIdentifier)
 	binary.BigEndian.PutUint16(marshalled[6:8], ((uint16(packet.Header.Flags) << 13) | (uint16(packet.Header.FragmentOffset) & 0x03f)))
 	marshalled[8] = packet.Header.TTL
