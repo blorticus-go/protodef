@@ -38,20 +38,15 @@ type IPv4Packet struct {
 	pdu              IPProtocolPDU
 }
 
-func cloneIP(src *net.IP) net.IP {
-	clone := make([]byte, len([]byte(*src)))
-	return net.IP(clone)
-}
-
-func NewIPv4Packet(source *net.IP, destination *net.IP) *IPv4Packet {
+func NewIPv4Packet(source net.IP, destination net.IP) *IPv4Packet {
 	return &IPv4Packet{
 		Header: IPv4PacketHeader{
 			Version:                   4,
 			HeaderLengthInDoubleWords: 5,
 			TotalPacketLengthInBytes:  20,
 			TTL:                       64,
-			SourceAddress:             cloneIP(source),
-			DestinationAddress:        cloneIP(destination),
+			SourceAddress:             source,
+			DestinationAddress:        destination,
 		},
 	}
 }
