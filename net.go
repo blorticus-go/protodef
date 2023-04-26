@@ -64,6 +64,7 @@ func (packet *IPv4Packet) SetRawPayloadErrorable(payloadInNetworkByteOrder []byt
 
 func (packet *IPv4Packet) WithPayloadFromPdu(pdu IPProtocolPDU) *IPv4Packet {
 	packet.pdu = pdu
+	packet.Header.Protocol = pdu.IPProtocolValue()
 	return packet
 }
 
