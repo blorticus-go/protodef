@@ -240,10 +240,11 @@ func (pdu *ICMPv4PDU) Marshall() ([]byte, error) {
 	marshalled[0] = uint8(pdu.Header.Type)
 	marshalled[1] = pdu.Header.Code
 	binary.BigEndian.PutUint16(marshalled[2:4], pdu.Header.Checksum)
-	copy(marshalled[4:len(pdu.Header.TypeSpecificHeader)], pdu.Header.TypeSpecificHeader)
 
-	offset := 4 + len(pdu.Header.TypeSpecificHeader)
-	copy(marshalled[offset:], pdu.Data)
+	offsetAtEndOfTypeSpecificHeader := 4 + len(pdu.Header.TypeSpecificHeader)
+	copy(marshalled[4:offsetAtEndOfTypeSpecificHeader], pdu.Header.TypeSpecificHeader)
+
+	copy(marshalled[offsetAtEndOfTypeSpecificHeader:], pdu.Data)
 
 	return marshalled, nil
 }
